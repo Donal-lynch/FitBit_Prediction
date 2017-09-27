@@ -1,0 +1,157 @@
+---
+title: "FitBit Prediction"
+author: "D Lynch"
+date: "27 September 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading the data
+Data read in from csv
+
+```{r Read the data, message=FALSE, warning=FALSE}
+library(dplyr)
+
+pml_training <- read.csv(
+    '../FBit_Data/pml-training.csv', header = TRUE, na.strings = 'NA'
+    )
+
+pml_testing <- read.csv(
+    '../FBit_Data/pml-testing.csv', header = TRUE, na.strings = 'NA'
+    )
+```
+
+## Preprocessing
+
+After a quick look at both files, it was clear that there were many NA columns in the testing data.
+These NA columns were removed from both data sets
+
+```{r}
+# Apply loop returns TRUE for the NA rows
+# included ! to convert True to False and vice versa
+NaCols <- !apply(pml_testing, 2, anyNA)
+
+pml_training <- pml_training [,NaCols]
+pml_testing <- pml_testing [,NaCols]
+```
+
+I read on the forums that there was a strong corrlolation with time and classe. The plot below shows the data for one user, and time against 
+index with classe highlighted by colour
+
+```{r corrolation with time data, warning=FALSE, message=FALSE}
+library(ggplot2)
+User1 <- pml_training[pml_training$user_name=='carlitos',]
+ggplot (data = User1, aes(x = X, y = raw_timestamp_part_1, colour = classe)) + geom_point()
+
+```
+
+Obviously this is not what we want to show, so all variable related to time, and index are removed:
+```{r remove time data}
+pml_training <- pml_training %>%
+    subset( select = -c(X, raw_timestamp_part_1, raw_timestamp_part_2,
+                        cvtd_timestamp, new_window, num_window))
+
+# Apply to the test data too
+pml_testing <- pml_testing %>%
+    subset( select = -c(X, raw_timestamp_part_1, raw_timestamp_part_2,
+                        cvtd_timestamp, new_window, num_window))
+
+# Testing data also has a problemID column at the end, remove this
+pml_testing <- subset(pml_testing, select = -c(problem_id))
+```
+
+And a quick check over the data:
+```{r check the data}
+# Check for any NA's in data
+anyNA(apply(pml_training, 2, anyNA))
+```
+There are no Na's in the data frame
+
+```{r}
+# Check the calsses of each col
+lapply(pml_training, class)%>%unlist%>%table
+```
+As expected, there are 2 factor columns (which are user_name and classe) and the rest are integer or numeric.
+
+## Building the model
+
+Split the training data up into building and validating data
+
+```{r extracting a triaining set, message=FALSE, warning=FALSE}
+# I plan using an Ensembling method, hence the 2 build sets, and validation
+set.seed (1234)
+library(caret)
+
+inBuild <- createDataPartition(pml_training$classe, p = .75, list = FALSE)
+building <- pml_training[inBuild,]
+validating <- pml_training[-inBuild,]
+
+```
+
+Create the models. I choose to do a random forest model, because I hope that I will get high accuracy. I looked into speeding up the required time, and found a like to this site from the Coursera forums:
+
+https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
+
+However, at fist the `train` function still gave an error. From researching online, it turns out that caret had a bug when using multiple cores. The bug has been resolved on the github version of caret, but the CRAN version (caret_6.0-77) still contains it.
+`devtools::install_github('topepo/caret/pkg/caret')` fixed the issue
+
+```{r RF, cache=TRUE, warning=FALSE, message=FALSE}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+fitControl <- trainControl(method = "cv",
+                           number = 10,
+                           allowParallel = TRUE)
+
+st <- Sys.time()
+modRF <- train(classe~., method = 'rf', data = building, trControl = fitControl)
+st <- Sys.time() - st 
+print(st)
+
+stopCluster(cluster)
+registerDoSEQ()
+
+```
+
+## Results
+
+Check the in sample error
+```{r In sample error}
+predInSample <- predict(modRF, building)
+cmInSamp <- confusionMatrix(predInSample, building$classe)
+cmInSamp$table
+cmInSamp$overall
+```
+Wow! Perfect! This is actaully a little worrying, as there are 2 explanations for this:
+
+* Excellant modelling
+* Over fitting
+
+I will know if over fitting was the issue, if the out of sample error is very high
+
+```{r Out of sample error}
+predOutSample <- predict(modRF, validating)
+cmOutSamp <- confusionMatrix(predOutSample, validating$classe)
+cmOutSamp$table
+cmOutSamp$overall
+```
+
+The out of sampe accuracy is less than 1%, so the conclusion is that this is a very good model.
+
+## Test sample
+
+Now to apply it to the test sample:
+
+```{r}
+predTest <- predict(modRF, pml_testing)
+predTest
+```
+
+I entered the results into the quiz and passed with 100%, so we can conlude that the random forest has done a really good job in this case.
+
+![Screen shot from Coursera](../FBit_Data/pass.jpg)
